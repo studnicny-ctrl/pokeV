@@ -268,12 +268,21 @@
             }
           };
 
-          // --- VYHLEDÁVÁNÍ KARET ---
+          // --- VYLEPŠENÉ VYHLEDÁVÁNÍ KARET ---
           const executeApiSearch = async () => {
             setIsLoading(true);
             let q = [];
+            
+            // Hledání podle jména
             if (searchName.trim()) q.push(`name:"*${searchName.trim()}*"`);
-            if (setCodeQuery.trim()) q.push(`set.id:"${setCodeQuery.trim().toLowerCase()}"`);
+            
+            // Vylepšené hledání podle edice (Kód, PTCGO zkratka, nebo textový název)
+            const setQ = setCodeQuery.trim();
+            if (setQ) {
+              q.push(`(set.id:"${setQ.toLowerCase()}" OR set.ptcgoCode:"${setQ.toUpperCase()}" OR set.name:"*${setQ}*")`);
+            }
+            
+            // Hledání podle čísla
             if (cardNumberQuery.trim()) q.push(`number:"${cardNumberQuery.trim()}"`);
 
             try {
@@ -467,7 +476,7 @@
                     <button style={styles.btnCamera} onClick={() => cameraInputRef.current?.click()}>📷 Vyfotit kartu fotoaparátem</button>
                     <div style={{ textAlign: 'center', color: '#888', margin: '14px 0', fontSize: 12 }}>— nebo vyhledat v databázi —</div>
                     <input style={styles.input} placeholder="Název karty (např. Pikachu)" value={searchName} onChange={e => setSearchName(e.target.value)} />
-                    <input style={styles.input} placeholder="Kód série (např. sv2)" value={setCodeQuery} onChange={e => setSetCodeQuery(e.target.value)} />
+                    <input style={styles.input} placeholder="Kód série (např. sv2, LOR, Paldea)" value={setCodeQuery} onChange={e => setSetCodeQuery(e.target.value)} />
                     <input style={styles.input} placeholder="Číslo karty (např. 269)" value={cardNumberQuery} onChange={e => setCardNumberQuery(e.target.value)} />
                     <button style={styles.btnPurple} onClick={executeApiSearch}>Vyhledat kartu</button>
                     
