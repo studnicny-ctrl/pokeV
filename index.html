@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PokeVault - Pokémon TCG Tracker</title>
+    <!-- React a ReactDOM přes CDN -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <!-- Babel pro zpracování JSX přímo v prohlížeči -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body style="margin: 0; background-color: #050508;">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useMemo } = React;
+
+        const CZK_RATE = 25.20;
+
+        // Koeficienty opotřebení pro výpočet ceny podle stavu karty
+        const CONDITION_MULTIPLIERS = {
+          'Near Mint': 1.0,
+          'Lightly Played': 0.85,
+          'Moderately Played': 0.70,
+          'Heavily Played': 0.50,
+          'Damaged': 0.35
+        };
+
+        // Váhy rarit pro řazení
+        const RARITY_WEIGHTS = {
+          'Common': 1,
+          'Uncommon': 2,
+          'Rare': 3,
+          'Rare Holo': 4,
+          'Illustration Rare': 5,
+          'Ultra Rare': 6,
+          'Special Illustration Rare': 7,
+          'Secret Rare': 8,
+          'Custom': 0
+        };
+
+        // Prostředník pro obcházení blokace obrázků z Pokémon TCG API
+        const getProxyUrl = (url) => {
+          if (!url) return '';
+          return `https://wsrv.nl/?url=${encodeURIComponent(url)}`;
+        };
+
+        // Pomocná funkce pro automatický výpočet odhadu pro CZ e-shopy
+        const calculateEshopPrices = (priceEur, cardName = '') => {
+          const baseCzk = Math.round((priceEur || 5.0) * CZK_RATE);
+          const low = Math.round(baseCzk * 1.15);
+          const high = Math.round(baseCzk * 1.45);
+          return { czEshopLow: low, czEshopHigh: high };
+        };
+
+        // Pomocná funkce pro výpočet ceny karty v Kč podle stavu
+        const getCardPriceCzk = (card) => {
+          const mult = CONDITION_MULTIPLIERS[card.condition] || 1.0;
+          return Math.round((card.priceEur || 5.0) * mult * CZK_RATE);
+        };
+
+        function App() {
+          const [activeTab, setActiveTab] = useState('collection'); // 'collection' | 'search' | 'wishlist' | 'finance'
+          const cameraInputRef = useRef(null);
+          const backupInputRef = useRef(null);
+
+          // --- STAVY DATABÁZE ---
+          const [cards, setCards] = useState(() => {
+            const saved = localStorage.getItem('pokevault_cards');
+            if (saved) return JSON.parse(saved);
+            
+            const ionoEshop = calculateEshopPrices(85.00, 'Iono');
+            const charizardEshop = calculateEshopPrices(62.50, 'Charizard ex');
+
+            return [
+              {
+                id: '1', name: 'Iono', set: 'Paldea Evolved', setCode: 'sv2', number: '269/193',
+                rarity: 'Special Illustration Rare', priceEur: 85.00, purchasePriceCzk: 1800,
+                czEshopLow: ionoEshop.czEshopLow, czEshopHigh: ionoEshop.czEshopHigh, condition: 'Near Mint', language: 'EN', binder: 'Hlavní Alba', type: 'Trainer',
+                image: 'https://images.pokemontcg.io/sv2/269_hires.png'
+              },
+              {
+                id: '2', name: 'Charizard ex', set: 'Obsidian Flames', setCode: 'sv3', number: '223/197',
+                rarity: 'Special Illustration Rare', priceEur: 62.50, purchasePriceCzk: 1400,
+                czEshopLow: charizardEshop.czEshopLow, czEshopHigh: charizardEshop.czEshopHigh, condition: 'Near Mint', language: 'EN', binder: 'Hlavní Alba', type: 'Pokémon',
+                image: 'https://images.pokemontcg.io/sv3/223_hires.png'
+              }
+            ];
+          });
+
+          const [wishlistCards, setWishlistCards] = useState(() => {
+            const saved = localStorage.getItem('pokevault_wishlist');
+            return saved ? JSON.parse(saved) : [];
+          });
+
+          const [binders, setBinders] = useState(() => {
+            const saved = localStorage.getItem('pokevault_binders');
+            return saved ? JSON.parse(saved) : ['Hlavní Alba', 'K Prodeji', 'Srdcovky'];
+          });
+
+          const [wishlistBinders, setWishlistBinders] = useState(() => {
+            const saved = localStorage.getItem('pokevault_wishlist_binders');
+            return saved ? JSON.parse(saved) : ['Chci koupit', 'Top Cíle'];
+          });
+
+          // --- ŘAZENÍ KARET VÉ SBÍRCE ---
+          const [sortBy, setSortBy] = useState('default'); // 'default' | 'price-asc' | 'price-desc' | 'rarity-asc' | 'rarity-desc'
+
+          // --- HISTORIE HODNOTY PRO GRAF ---
+          const currentTotalValueCzk = useMemo(() => {
+            return Math.round(cards.reduce((sum, card) => sum + getCardPriceCzk(card), 0));
+          }, [cards]);
+
+          const [historyData, setHistoryData] = useState(() => {
+            const saved = localStorage.getItem('pokevault_history');
+            if (saved) return JSON.parse(saved);
+            
+            let mockData = [];
+            let val = 3000;
+            for(let i = 30; i >= 1; i--) {
+              const d = new Date();
+              d.setDate(d.getDate() - i);
+              val = val + (Math.random() * 300 - 100);
+              mockData.push({ date: d.toISOString().split('T')[0], value: Math.max(0, Math.round(val)) });
+            }
+            return mockData;
+          });
+
+          useEffect(() => {
+            const today = new Date().toISOString().split('T')[0];
+            setHistoryData(prev => {
+              const updated = [...prev];
+              const todayIndex = updated.findIndex(item => item.date === today);
+              
+              if (todayIndex >= 0) {
+                updated[todayIndex].value = currentTotalValueCzk;
+              } else {
+                updated.push({ date: today, value: currentTotalValueCzk });
+              }
+              
+              const trimmed = updated.slice(Math.max(updated.length - 30, 0));
+              localStorage.setItem('pokevault_history', JSON.stringify(trimmed));
+              return trimmed;
+            });
+          }, [currentTotalValueCzk]);
+
+          useEffect(() => { localStorage.setItem('pokevault_cards', JSON.stringify(cards)); }, [cards]);
+          useEffect(() => { localStorage.setItem('pokevault_wishlist', JSON.stringify(wishlistCards)); }, [wishlistCards]);
+          useEffect(() => { localStorage.setItem('pokevault_binders', JSON.stringify(binders)); }, [binders]);
+          useEffect(() => { localStorage.setItem('pokevault_wishlist_binders', JSON.stringify(wishlistBinders)); }, [wishlistBinders]);
+
+          // --- STAVY UI ---
+          const [selectedBinder, setSelectedBinder] = useState('ALL');
+          const [selectedWishlistBinder, setSelectedWishlistBinder] = useState('ALL');
+          const [isBinderDropdownOpen, setIsBinderDropdownOpen] = useState(false);
+          const [isWishlistDropdownOpen, setIsWishlistDropdownOpen] = useState(false);
+          const [isAddBinderModalOpen, setIsAddBinderModalOpen] = useState(false);
+          const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
+          
+          const [selectedCard, setSelectedCard] = useState(null);
+          const [targetType, setTargetType] = useState('collection');
+
+          const [newBinderName, setNewBinderName] = useState('');
+          const [editingBinder, setEditingBinder] = useState(null);
+          const [editBinderName, setEditBinderName] = useState('');
+          const [isTargetingWishlist, setIsTargetingWishlist] = useState(false);
+
+          const [searchName, setSearchName] = useState('');
+          const [setCodeQuery, setSetCodeQuery] = useState('');
+          const [cardNumberQuery, setCardNumberQuery] = useState('');
+          const [searchResults, setSearchResults] = useState([]);
+          const [isLoading, setIsLoading] = useState(false);
+
+          // --- ZÁLOHY ---
+          const handleExportBackup = () => {
+            const data = { cards, wishlistCards, binders, wishlistBinders, historyData, exportDate: new Date().toISOString() };
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `pokevault_zaloha_${new Date().toISOString().slice(0, 10)}.json`;
+            a.click();
+          };
+
+          const handleImportBackup = (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (event) => {
+              try {
+                const data = JSON.parse(event.target.result);
+                if (data.cards) setCards(data.cards);
+                if (data.wishlistCards) setWishlistCards(data.wishlistCards);
+                if (data.binders) setBinders(data.binders);
+                if (data.wishlistBinders) setWishlistBinders(data.wishlistBinders);
+                if (data.historyData) setHistoryData(data.historyData);
+                alert('Záloha byla úspěšně obnovena!');
+                setIsBackupModalOpen(false);
+              } catch (err) {
+                alert('Chyba při čtení záložního souboru.');
+              }
+            };
+            reader.readAsText(file);
+          };
+
+          // --- FOTOAPARÁT ---
+          const handleCameraCapture = (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            const photoUrl = URL.createObjectURL(file);
+            const eshopCalc = calculateEshopPrices(5.0, 'Vyfocená karta');
+
+            const capturedCard = {
+              id: Date.now().toString(),
+              name: 'Vyfocená karta',
+              set: 'Vlastní foto',
+              setCode: 'custom',
+              number: '1/1',
+              rarity: 'Custom',
+              priceEur: 5.0,
+              purchasePriceCzk: 0,
+              czEshopLow: eshopCalc.czEshopLow,
+              czEshopHigh: eshopCalc.czEshopHigh,
+              image: photoUrl, 
+              binder: binders[0] || 'Hlavní Alba',
+              wishlistBinder: wishlistBinders[0] || 'Chci koupit',
+              note: '', condition: 'Near Mint', language: 'EN', type: 'Pokémon'
+            };
+            setTargetType('collection');
+            setSelectedCard(capturedCard);
+          };
+
+          // --- BINDERY ---
+          const handleAddBinder = () => {
+            if (!newBinderName.trim()) return;
+            const name = newBinderName.trim();
+            if (isTargetingWishlist) {
+              if (!wishlistBinders.includes(name)) setWishlistBinders([...wishlistBinders, name]);
+            } else {
+              if (!binders.includes(name)) setBinders([...binders, name]);
+            }
+            setNewBinderName('');
+            setIsAddBinderModalOpen(false);
+          };
+
+          const handleRenameBinder = () => {
+            if (!editBinderName.trim() || !editingBinder) return;
+            const oldN = editingBinder;
+            const newN = editBinderName.trim();
+            if (isTargetingWishlist) {
+              setWishlistBinders(prev => prev.map(b => b === oldN ? newN : b));
+              setWishlistCards(prev => prev.map(c => c.binder === oldN ? { ...c, binder: newN } : c));
+            } else {
+              setBinders(prev => prev.map(b => b === oldN ? newN : b));
+              setCards(prev => prev.map(c => c.binder === oldN ? { ...c, binder: newN } : c));
+            }
+            setEditingBinder(null);
+          };
+
+          const handleDeleteBinder = (bName, isWishlist = false) => {
+            if (isWishlist) {
+              setWishlistBinders(prev => prev.filter(b => b !== bName));
+              setWishlistCards(prev => prev.map(c => c.binder === bName ? { ...c, binder: 'Chci koupit' } : c));
+            } else {
+              setBinders(prev => prev.filter(b => b !== bName));
+              setCards(prev => prev.map(c => c.binder === bName ? { ...c, binder: 'Hlavní Alba' } : c));
+            }
+          };
+
+          // --- VYHLEDÁVÁNÍ KARET ---
+          const executeApiSearch = async () => {
+            setIsLoading(true);
+            let q = [];
+            if (searchName.trim()) q.push(`name:"*${searchName.trim()}*"`);
+            if (setCodeQuery.trim()) q.push(`set.id:"${setCodeQuery.trim().toLowerCase()}"`);
+            if (cardNumberQuery.trim()) q.push(`number:"${cardNumberQuery.trim()}"`);
+
+            try {
+              const res = await fetch(`https://api.pokemontcg.io/v2/cards?q=${encodeURIComponent(q.join(' '))}&pageSize=15`);
+              const data = await res.json();
+              setSearchResults(data.data || []);
+            } catch (err) {
+              console.error('Chyba při hledání:', err);
+            } finally {
+              setIsLoading(false);
+            }
+          };
+
+          const openCardDetailFromSearch = (item) => {
+            const priceEur = item.cardmarket?.prices?.trendPrice || 5.0;
+            const cardImageUrl = item.images?.large || item.images?.small;
+            const eshopCalc = calculateEshopPrices(priceEur, item.name);
+
+            const formatted = {
+              id: Date.now().toString(),
+              name: item.name,
+              set: item.set?.name || 'Edice',
+              setCode: item.set?.id || '',
+              number: `${item.number}/${item.set?.printedTotal || '?'}`,
+              rarity: item.rarity || 'Common',
+              priceEur: priceEur,
+              purchasePriceCzk: 0,
+              czEshopLow: eshopCalc.czEshopLow,
+              czEshopHigh: eshopCalc.czEshopHigh,
+              image: cardImageUrl,
+              binder: binders[0] || 'Hlavní Alba',
+              wishlistBinder: wishlistBinders[0] || 'Chci koupit',
+              note: '', condition: 'Near Mint', language: 'EN',
+              type: item.supertype === 'Trainer' ? 'Trainer' : 'Pokémon'
+            };
+            
+            setTargetType('collection');
+            setSelectedCard(formatted);
+          };
+
+          // --- ULOŽENÍ A SMAZÁNÍ ---
+          const handleSaveCard = () => {
+            if (!selectedCard) return;
+            if (targetType === 'collection') {
+              const cardToSave = { ...selectedCard, binder: selectedCard.binder || binders[0] };
+              setCards(prev => [...prev.filter(c => c.id !== cardToSave.id), cardToSave]);
+              setWishlistCards(prev => prev.filter(c => c.id !== cardToSave.id));
+            } else {
+              const cardToSave = { ...selectedCard, binder: selectedCard.wishlistBinder || wishlistBinders[0] };
+              setWishlistCards(prev => [...prev.filter(c => c.id !== cardToSave.id), cardToSave]);
+              setCards(prev => prev.filter(c => c.id !== cardToSave.id));
+            }
+            setSelectedCard(null);
+          };
+
+          const handleDeleteCard = () => {
+            if (!selectedCard) return;
+            setCards(prev => prev.filter(c => c.id !== selectedCard.id));
+            setWishlistCards(prev => prev.filter(c => c.id !== selectedCard.id));
+            setSelectedCard(null);
+          };
+
+          // --- FILTROVANÉ A SEŘAZENÉ KARTY ---
+          const displayedCards = useMemo(() => {
+            const filtered = cards.filter(c => selectedBinder === 'ALL' || c.binder === selectedBinder);
+            return [...filtered].sort((a, b) => {
+              if (sortBy === 'price-asc') {
+                return getCardPriceCzk(a) - getCardPriceCzk(b);
+              }
+              if (sortBy === 'price-desc') {
+                return getCardPriceCzk(b) - getCardPriceCzk(a);
+              }
+              if (sortBy === 'rarity-asc' || sortBy === 'rarity-desc') {
+                const wA = RARITY_WEIGHTS[a.rarity] || 2;
+                const wB = RARITY_WEIGHTS[b.rarity] || 2;
+                return sortBy === 'rarity-asc' ? wA - wB : wB - wA;
+              }
+              return 0;
+            });
+          }, [cards, selectedBinder, sortBy]);
+
+          // --- KRESLENÍ GRAFU ---
+          const renderChart = () => {
+            if (historyData.length === 0) return null;
+            
+            const minVal = Math.min(...historyData.map(d => d.value)) * 0.9;
+            const maxVal = Math.max(...historyData.map(d => d.value)) * 1.1;
+            const range = maxVal - minVal;
+            
+            const width = 340;
+            const height = 180;
+            const paddingX = 10;
+            const paddingY = 20;
+
+            const points = historyData.map((d, index) => {
+              const x = paddingX + (index / (historyData.length - 1 || 1)) * (width - paddingX * 2);
+              const y = height - paddingY - ((d.value - minVal) / range) * (height - paddingY * 2);
+              return `${x},${y}`;
+            }).join(' ');
+
+            return (
+              <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} style={{ marginTop: 15, backgroundColor: '#161323', borderRadius: 16 }}>
+                <polyline fill="none" stroke="#c084fc" strokeWidth="3" points={points} strokeLinecap="round" strokeLinejoin="round" />
+                
+                {historyData.length > 0 && (
+                  <circle 
+                    cx={paddingX + ((historyData.length - 1) / (historyData.length - 1 || 1)) * (width - paddingX * 2)} 
+                    cy={height - paddingY - ((historyData[historyData.length - 1].value - minVal) / range) * (height - paddingY * 2)} 
+                    r="5" fill="#c084fc" 
+                  />
+                )}
+              </svg>
+            );
+          };
+
+          return (
+            <div style={styles.appContainer}>
+              <div style={styles.mobileFrame}>
+                
+                <input type="file" accept="image/*" capture="environment" ref={cameraInputRef} style={{ display: 'none' }} onChange={handleCameraCapture} />
+                <input type="file" accept=".json" ref={backupInputRef} style={{ display: 'none' }} onChange={handleImportBackup} />
+
+                {/* 1. MOJE SBÍRKA */}
+                {activeTab === 'collection' && (
+                  <div style={styles.tabContent}>
+                    <div style={styles.headerRow}>
+                      <div>
+                        <div style={styles.brandTitle}>POKEVAULT</div>
+                        <h2 style={styles.headerTitle}>Moje Sbírka</h2>
+                      </div>
+                      <button style={styles.btnBackup} onClick={() => setIsBackupModalOpen(true)}>💾 Záloha</button>
+                    </div>
+
+                    <div style={styles.binderBar}>
+                      <div style={{ flex: 1, cursor: 'pointer' }} onClick={() => setIsBinderDropdownOpen(!isBinderDropdownOpen)}>
+                        <span style={styles.binderTitle}>📁 Binder: <strong style={{ color: '#c084fc' }}>{selectedBinder === 'ALL' ? 'Všechna alba' : selectedBinder}</strong> ▾</span>
+                      </div>
+                      <button style={styles.btnPurpleSmall} onClick={() => { setIsTargetingWishlist(false); setIsAddBinderModalOpen(true); }}>
+                        + Binder
+                      </button>
+                    </div>
+
+                    {isBinderDropdownOpen && (
+                      <div style={styles.dropdownList}>
+                        <div style={styles.dropdownOption} onClick={() => { setSelectedBinder('ALL'); setIsBinderDropdownOpen(false); }}>
+                          <strong>Všechna alba</strong>
+                        </div>
+                        {binders.map(b => (
+                          <div key={b} style={styles.dropdownRow}>
+                            <span style={{ flex: 1, cursor: 'pointer' }} onClick={() => { setSelectedBinder(b); setIsBinderDropdownOpen(false); }}>{b}</span>
+                            <button style={styles.iconBtn} onClick={() => { setIsTargetingWishlist(false); setEditingBinder(b); setEditBinderName(b); }}>✏️</button>
+                            <button style={styles.iconBtn} onClick={() => handleDeleteBinder(b, false)}>🗑️</button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* ŘAZENÍ KARET */}
+                    <div style={{ marginBottom: 12 }}>
+                      <select style={styles.sortSelect} value={sortBy} onChange={e => setSortBy(e.target.value)}>
+                        <option value="default">↕️ Řazení: Výchozí</option>
+                        <option value="price-asc">💰 Cena: od nejnižší</option>
+                        <option value="price-desc">💎 Cena: od nejvyšší</option>
+                        <option value="rarity-asc">✨ Rarita: vzestupně</option>
+                        <option value="rarity-desc">🔥 Rarita: sestupně</option>
+                      </select>
+                    </div>
+
+                    <div style={styles.cardGrid}>
+                      {displayedCards.map(item => (
+                        <div key={item.id} style={styles.cardBox} onClick={() => { setTargetType('collection'); setSelectedCard(item); }}>
+                          <div style={styles.cardImgContainer}>
+                            <img src={item.image.startsWith('blob:') ? item.image : getProxyUrl(item.image)} alt={item.name} style={styles.cardImg} />
+                            <span style={styles.langBadge}>{item.language}</span>
+                          </div>
+                          <span style={styles.cardName}>{item.name}</span>
+                          <span style={styles.cardSet}>{item.set}</span>
+                          <span style={styles.cardBinderBadge}>📁 {item.binder}</span>
+                          <span style={styles.cardPrice}>{getCardPriceCzk(item)} Kč</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* 2. VYHLEDÁVÁNÍ TEXTEM I KAMEROU */}
+                {activeTab === 'search' && (
+                  <div style={styles.tabContent}>
+                    <div style={styles.brandTitle}>POKEVAULT</div>
+                    <h2 style={styles.headerTitle}>Hledat & Přidat</h2>
+                    <button style={styles.btnCamera} onClick={() => cameraInputRef.current?.click()}>📷 Vyfotit kartu fotoaparátem</button>
+                    <div style={{ textAlign: 'center', color: '#888', margin: '14px 0', fontSize: 12 }}>— nebo vyhledat v databázi —</div>
+                    <input style={styles.input} placeholder="Název karty (např. Pikachu)" value={searchName} onChange={e => setSearchName(e.target.value)} />
+                    <input style={styles.input} placeholder="Kód série (např. sv2)" value={setCodeQuery} onChange={e => setSetCodeQuery(e.target.value)} />
+                    <input style={styles.input} placeholder="Číslo karty (např. 269)" value={cardNumberQuery} onChange={e => setCardNumberQuery(e.target.value)} />
+                    <button style={styles.btnPurple} onClick={executeApiSearch}>Vyhledat kartu</button>
+                    
+                    {isLoading ? <div style={{ color: '#fff', textAlign: 'center', marginTop: 20 }}>Načítám karty...</div> : (
+                      <div style={{ marginTop: 15 }}>
+                        {searchResults.map(item => (
+                          <div key={item.id} style={styles.searchRow} onClick={() => openCardDetailFromSearch(item)}>
+                            <img src={getProxyUrl(item.images?.small || item.images?.large)} alt={item.name} style={styles.searchImg} />
+                            <div style={{ flex: 1 }}>
+                              <div style={{ fontWeight: 'bold', color: '#fff' }}>{item.name}</div>
+                              <div style={styles.txtSub}>{item.set?.name} • #{item.number}</div>
+                            </div>
+                            <span style={styles.txtPurple}>+ Detail</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* 3. WISHLIST */}
+                {activeTab === 'wishlist' && (
+                  <div style={styles.tabContent}>
+                    <div style={styles.brandTitle}>POKEVAULT</div>
+                    <h2 style={styles.headerTitle}>Můj Wishlist</h2>
+                    <div style={styles.binderBar}>
+                      <div style={{ flex: 1, cursor: 'pointer' }} onClick={() => setIsWishlistDropdownOpen(!isWishlistDropdownOpen)}>
+                        <span style={styles.binderTitle}>⭐ Binder: <strong style={{ color: '#c084fc' }}>{selectedWishlistBinder === 'ALL' ? 'Všechna wishlist alba' : selectedWishlistBinder}</strong> ▾</span>
+                      </div>
+                      <button style={styles.btnPurpleSmall} onClick={() => { setIsTargetingWishlist(true); setIsAddBinderModalOpen(true); }}>+ Binder</button>
+                    </div>
+                    
+                    {isWishlistDropdownOpen && (
+                      <div style={styles.dropdownList}>
+                        <div style={styles.dropdownOption} onClick={() => { setSelectedWishlistBinder('ALL'); setIsWishlistDropdownOpen(false); }}>
+                          <strong>Všechna wishlist alba</strong>
+                        </div>
+                        {wishlistBinders.map(b => (
+                          <div key={b} style={styles.dropdownRow}>
+                            <span style={{ flex: 1, cursor: 'pointer' }} onClick={() => { setSelectedWishlistBinder(b); setIsWishlistDropdownOpen(false); }}>{b}</span>
+                            <button style={styles.iconBtn} onClick={() => { setIsTargetingWishlist(true); setEditingBinder(b); setEditBinderName(b); }}>✏️</button>
+                            <button style={styles.iconBtn} onClick={() => handleDeleteBinder(b, true)}>🗑️</button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <div style={styles.cardGrid}>
+                      {wishlistCards.filter(c => selectedWishlistBinder === 'ALL' || c.binder === selectedWishlistBinder).map(item => (
+                        <div key={item.id} style={styles.cardBox} onClick={() => { setTargetType('wishlist'); setSelectedCard(item); }}>
+                          <div style={styles.cardImgContainer}>
+                            <img src={item.image.startsWith('blob:') ? item.image : getProxyUrl(item.image)} alt={item.name} style={styles.cardImg} />
+                          </div>
+                          <span style={styles.cardName}>{item.name}</span>
+                          <span style={styles.cardSet}>{item.set}</span>
+                          <span style={styles.cardBinderBadge}>⭐ {item.binder}</span>
+                          {item.note && <span style={styles.cardNote}>📝 {item.note}</span>}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* 4. FINANCE TAB */}
+                {activeTab === 'finance' && (
+                  <div style={styles.tabContent}>
+                    <div style={styles.brandTitle}>POKEVAULT</div>
+                    <h2 style={styles.headerTitle}>Finance & Analýza</h2>
+                    
+                    <div style={{ backgroundColor: '#161323', padding: 22, borderRadius: 16, textAlign: 'center', marginTop: 15, border: '1px solid rgba(168, 85, 247, 0.2)' }}>
+                      <div style={{ color: '#aaa', fontSize: 13, marginBottom: 5 }}>Aktuální tržní hodnota sbírky</div>
+                      <div style={{ color: '#c084fc', fontSize: 32, fontWeight: 'bold' }}>
+                        {currentTotalValueCzk.toLocaleString('cs-CZ')} Kč
+                      </div>
+                      <div style={{ color: '#888', fontSize: 12, marginTop: 5 }}>Odhad dle Cardmarket API (včetně stavu)</div>
+                    </div>
+
+                    <h3 style={{ fontSize: 16, marginTop: 25, marginBottom: 5 }}>Vývoj hodnoty za 30 dní</h3>
+                    {renderChart()}
+
+                    <div style={{ backgroundColor: '#161323', padding: 18, borderRadius: 16, marginTop: 20, border: '1px solid rgba(168, 85, 247, 0.2)' }}>
+                      <h3 style={{ fontSize: 14, margin: '0 0 12px 0' }}>Zajímavosti ze sbírky</h3>
+                      <div style={styles.priceRow}>
+                        <span style={{ color: '#aaa' }}>Počet uložených karet:</span>
+                        <strong>{cards.length} ks</strong>
+                      </div>
+                      <div style={styles.priceRow}>
+                        <span style={{ color: '#aaa' }}>Průměrná cena na kartu:</span>
+                        <strong>{cards.length > 0 ? Math.round(currentTotalValueCzk / cards.length).toLocaleString('cs-CZ') : 0} Kč</strong>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* PLOVOUCÍ SPODNÍ NAVIGACE */}
+                <div style={styles.bottomBar}>
+                  <button style={{ ...styles.navBtn, color: activeTab === 'collection' ? '#c084fc' : '#888', background: activeTab === 'collection' ? 'rgba(168, 85, 247, 0.12)' : 'transparent' }} onClick={() => setActiveTab('collection')}>
+                    <span style={{ fontSize: 18 }}>📦</span>
+                    <span style={{ fontSize: 10 }}>Sbírka</span>
+                  </button>
+                  <button style={{ ...styles.navBtn, color: activeTab === 'search' ? '#c084fc' : '#888', background: activeTab === 'search' ? 'rgba(168, 85, 247, 0.12)' : 'transparent' }} onClick={() => setActiveTab('search')}>
+                    <span style={{ fontSize: 18 }}>🔍</span>
+                    <span style={{ fontSize: 10 }}>Hledat</span>
+                  </button>
+                  <button style={{ ...styles.navBtn, color: activeTab === 'wishlist' ? '#c084fc' : '#888', background: activeTab === 'wishlist' ? 'rgba(168, 85, 247, 0.12)' : 'transparent' }} onClick={() => setActiveTab('wishlist')}>
+                    <span style={{ fontSize: 18 }}>⭐</span>
+                    <span style={{ fontSize: 10 }}>Chci</span>
+                  </button>
+                  <button style={{ ...styles.navBtn, color: activeTab === 'finance' ? '#c084fc' : '#888', background: activeTab === 'finance' ? 'rgba(168, 85, 247, 0.12)' : 'transparent' }} onClick={() => setActiveTab('finance')}>
+                    <span style={{ fontSize: 18 }}>📈</span>
+                    <span style={{ fontSize: 10 }}>Finance</span>
+                  </button>
+                </div>
+
+                {/* MODAL DETAILU KARTY */}
+                {selectedCard && (
+                  <div style={styles.modalOverlay}>
+                    <div style={styles.modalContent}>
+                      <img src={selectedCard.image.startsWith('blob:') ? selectedCard.image : getProxyUrl(selectedCard.image)} alt={selectedCard.name} style={styles.modalImg} />
+                      <h3 style={{ margin: '8px 0 2px 0', fontSize: 20 }}>{selectedCard.name}</h3>
+                      <div style={styles.txtSub}>{selectedCard.set} • #{selectedCard.number}</div>
+
+                      <div style={styles.targetSegmentContainer}>
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          <button style={{ ...styles.targetSegmentBtn, backgroundColor: targetType === 'collection' ? '#7c3aed' : '#1e1b2e' }} onClick={() => setTargetType('collection')}>📦 Do Sbírky</button>
+                          <button style={{ ...styles.targetSegmentBtn, backgroundColor: targetType === 'wishlist' ? '#7c3aed' : '#1e1b2e' }} onClick={() => setTargetType('wishlist')}>⭐ Do Wishlistu</button>
+                        </div>
+                      </div>
+
+                      {/* VÝBĚR STAVU KARTY */}
+                      <div style={styles.fieldBox}>
+                        <label style={styles.fieldLabel}>Stav karty (ovlivňuje cenu):</label>
+                        <div style={styles.chipRow}>
+                          {Object.keys(CONDITION_MULTIPLIERS).map(cond => (
+                            <button 
+                              key={cond} 
+                              style={{ 
+                                ...styles.chip, 
+                                backgroundColor: (selectedCard.condition === cond) ? '#7c3aed' : '#1e1b2e',
+                                border: selectedCard.condition === cond ? '1px solid #c084fc' : '1px solid transparent'
+                              }} 
+                              onClick={() => setSelectedCard({ ...selectedCard, condition: cond })}
+                            >
+                              {cond}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* CARDMARKET CENY A ROZMEZÍ S MIN / MAX + 20% */}
+                      <div style={styles.priceContainer}>
+                        <div style={{ fontSize: 12, color: '#aaa', fontWeight: 'bold', marginBottom: 4, textAlign: 'left' }}>Cardmarket cena (pro stav {selectedCard.condition || 'Near Mint'}):</div>
+                        <div style={{ fontSize: 24, color: '#c084fc', fontWeight: 'bold', textAlign: 'center', marginBottom: 12 }}>
+                          {getCardPriceCzk(selectedCard)} Kč <span style={{ fontSize: 14, color: '#888' }}>({((selectedCard.priceEur || 5.0) * (CONDITION_MULTIPLIERS[selectedCard.condition] || 1.0)).toFixed(2)} €)</span>
+                        </div>
+
+                        <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid rgba(168,85,247,0.15)', paddingTop: 10, fontSize: 12 }}>
+                          <div>
+                            <span style={{ color: '#888', display: 'block', fontSize: 10 }}>Nejnižší (Damaged)</span>
+                            <strong style={{ color: '#f87171' }}>{Math.round((selectedCard.priceEur || 5.0) * 0.35 * CZK_RATE)} Kč</strong>
+                          </div>
+                          <div style={{ textAlign: 'right' }}>
+                            <span style={{ color: '#888', display: 'block', fontSize: 10 }}>Nejvyšší (NM + 20%)</span>
+                            <strong style={{ color: '#4ade80' }}>{Math.round((selectedCard.priceEur || 5.0) * 1.0 * CZK_RATE * 1.20)} Kč</strong>
+                          </div>
+                        </div>
+
+                        <div style={{ fontSize: 12, color: '#aaa', fontWeight: 'bold', margin: '15px 0 6px 0', textAlign: 'left' }}>
+                          Ruční úprava odhadu CZ e-shopů:
+                        </div>
+
+                        <div style={{ display: 'flex', gap: 10 }}>
+                          <div style={{ flex: 1 }}>
+                            <label style={{ fontSize: 10, color: '#888' }}>Nejnižší CZ (Kč)</label>
+                            <input type="number" style={styles.inputSmall} value={selectedCard.czEshopLow || ''} onChange={e => setSelectedCard({ ...selectedCard, czEshopLow: Number(e.target.value) })} />
+                          </div>
+                          <div style={{ flex: 1 }}>
+                            <label style={{ fontSize: 10, color: '#888' }}>Nejvyšší CZ (Kč)</label>
+                            <input type="number" style={styles.inputSmall} value={selectedCard.czEshopHigh || ''} onChange={e => setSelectedCard({ ...selectedCard, czEshopHigh: Number(e.target.value) })} />
+                          </div>
+                        </div>
+                      </div>
+
+                      {targetType === 'collection' ? (
+                        <>
+                          <div style={styles.fieldBox}>
+                            <label style={styles.fieldLabel}>Binder (Sbírka):</label>
+                            <div style={styles.chipRow}>
+                              {binders.map(b => (
+                                <button key={b} style={{ ...styles.chip, backgroundColor: (selectedCard.binder === b) ? '#7c3aed' : '#1e1b2e' }} onClick={() => setSelectedCard({ ...selectedCard, binder: b })}>{b}</button>
+                              ))}
+                            </div>
+                          </div>
+                          <div style={styles.fieldBox}>
+                            <label style={styles.fieldLabel}>Tvoje Nákupní cena (Kč):</label>
+                            <input style={styles.input} type="number" value={selectedCard.purchasePriceCzk || ''} onChange={e => setSelectedCard({ ...selectedCard, purchasePriceCzk: Number(e.target.value) })} />
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div style={styles.fieldBox}>
+                            <label style={styles.fieldLabel}>Wishlist Binder:</label>
+                            <div style={styles.chipRow}>
+                              {wishlistBinders.map(b => (
+                                <button key={b} style={{ ...styles.chip, backgroundColor: (selectedCard.wishlistBinder === b) ? '#7c3aed' : '#1e1b2e' }} onClick={() => setSelectedCard({ ...selectedCard, wishlistBinder: b })}>{b}</button>
+                              ))}
+                            </div>
+                          </div>
+                          <div style={styles.fieldBox}>
+                            <label style={styles.fieldLabel}>Poznámka:</label>
+                            <input style={styles.input} placeholder="Např. Koupit do 500 Kč" value={selectedCard.note || ''} onChange={e => setSelectedCard({ ...selectedCard, note: e.target.value })} />
+                          </div>
+                        </>
+                      )}
+
+                      <div style={styles.actionRow}>
+                        <button style={styles.btnDangerAction} onClick={handleDeleteCard}>Smazat</button>
+                        <button style={styles.btnGray} onClick={() => setSelectedCard(null)}>Zpět</button>
+                        <button style={styles.btnPurpleAction} onClick={handleSaveCard}>
+                          Uložit
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* MODAL PRO ZÁLOHOVÁNÍ */}
+                {isBackupModalOpen && (
+                  <div style={styles.modalOverlay}>
+                    <div style={styles.dialog}>
+                      <h3>Záloha a Obnova Dat</h3>
+                      <p style={{ fontSize: 13, color: '#aaa' }}>Stáhni si soubor se všemi tvojími kartami a bindery pro zálohu, nebo načti dříve uložený soubor.</p>
+                      <button style={{ ...styles.btnPurple, marginBottom: 10 }} onClick={handleExportBackup}>📥 Stáhnout zálohu (Export)</button>
+                      <button style={{ ...styles.btnGray, width: '100%' }} onClick={() => backupInputRef.current?.click()}>📤 Obnovit ze zálohy</button>
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 15 }}>
+                        <button style={styles.btnGray} onClick={() => setIsBackupModalOpen(false)}>Zavřít</button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* POPUP BINDER */}
+                {(isAddBinderModalOpen || editingBinder) && (
+                  <div style={styles.modalOverlay}>
+                    <div style={styles.dialog}>
+                      <h3>{editingBinder ? 'Upravit Binder' : `Přidat Binder`}</h3>
+                      <input style={styles.input} placeholder="Název binderu" value={editingBinder ? editBinderName : newBinderName} onChange={e => editingBinder ? setEditBinderName(e.target.value) : setNewBinderName(e.target.value)} />
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 15 }}>
+                        <button style={styles.btnGray} onClick={() => { setIsAddBinderModalOpen(false); setEditingBinder(null); }}>Zrušit</button>
+                        <button style={styles.btnPurpleSmall} onClick={editingBinder ? handleRenameBinder : handleAddBinder}>Uložit</button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        }
+
+        // STYLY
+        const styles = {
+          appContainer: { backgroundColor: '#050508', minHeight: '100vh', display: 'flex', justifyContent: 'center', alignItems: 'center', fontFamily: 'sans-serif', color: '#fff' },
+          mobileFrame: { width: '100%', maxWidth: '430px', height: '100vh', backgroundColor: '#0d0b14', display: 'flex', flexDirection: 'column', position: 'relative', overflow: 'hidden', boxShadow: '0 0 40px rgba(139, 92, 246, 0.15)' },
+          tabContent: { flex: 1, padding: '16px', overflowY: 'auto', paddingBottom: '90px' },
+          brandTitle: { fontSize: 10, fontWeight: '800', letterSpacing: '2px', color: '#a855f7', marginBottom: 2 },
+          headerRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 },
+          headerTitle: { margin: 0, fontSize: 24, fontWeight: 'bold' },
+          btnBackup: { backgroundColor: '#161323', color: '#c084fc', border: '1px solid rgba(168, 85, 247, 0.3)', padding: '6px 12px', borderRadius: 20, fontSize: 11, cursor: 'pointer', fontWeight: 'bold' },
+          
+          binderBar: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#161323', padding: '12px 14px', borderRadius: 14, marginBottom: 10, border: '1px solid rgba(168, 85, 247, 0.15)' },
+          binderTitle: { fontWeight: 'bold', fontSize: 13 },
+          dropdownList: { backgroundColor: '#161323', borderRadius: 14, padding: 10, marginBottom: 12, border: '1px solid rgba(168, 85, 247, 0.2)' },
+          dropdownOption: { padding: '8px 0', cursor: 'pointer', color: '#c084fc' },
+          dropdownRow: { display: 'flex', justifyContent: 'space-between', padding: '8px 0', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.05)' },
+          iconBtn: { background: 'none', border: 'none', cursor: 'pointer', fontSize: 14 },
+          
+          sortSelect: { width: '100%', backgroundColor: '#161323', color: '#c084fc', padding: '10px 14px', borderRadius: 12, border: '1px solid rgba(168, 85, 247, 0.25)', outline: 'none', fontSize: 13, fontWeight: 'bold', cursor: 'pointer' },
+
+          cardGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 },
+          cardBox: { backgroundColor: '#161323', padding: 12, borderRadius: 16, display: 'flex', flexDirection: 'column', alignItems: 'center', cursor: 'pointer', position: 'relative', border: '1px solid rgba(168, 85, 247, 0.15)', transition: 'transform 0.2s' },
+          cardImgContainer: { position: 'relative', width: '100%', height: '150px', display: 'flex', justifyContent: 'center' },
+          cardImg: { maxWidth: '100%', maxHeight: '100%', borderRadius: 8, objectFit: 'contain' },
+          langBadge: { position: 'absolute', top: 0, right: 0, backgroundColor: 'rgba(15, 13, 22, 0.85)', color: '#c084fc', fontSize: 9, padding: '2px 6px', borderRadius: 6, fontWeight: 'bold', border: '1px solid rgba(168, 85, 247, 0.3)' },
+          cardName: { fontWeight: 'bold', fontSize: 13, marginTop: 8, textAlign: 'center', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', width: '100%' },
+          cardSet: { color: '#888', fontSize: 11, marginTop: 2 },
+          cardBinderBadge: { color: '#c084fc', fontSize: 10, fontWeight: 'bold', marginTop: 4 },
+          cardPrice: { color: '#4ade80', fontWeight: 'bold', fontSize: 12, marginTop: 4 },
+          cardNote: { color: '#f43f5e', fontSize: 10, marginTop: 2 },
+
+          input: { width: '100%', boxSizing: 'border-box', backgroundColor: '#161323', color: '#fff', padding: 14, borderRadius: 14, marginBottom: 12, border: '1px solid rgba(168, 85, 247, 0.25)', outline: 'none', fontSize: 14 },
+          inputSmall: { width: '100%', boxSizing: 'border-box', backgroundColor: '#0d0b14', color: '#fff', padding: 10, borderRadius: 10, border: '1px solid rgba(168, 85, 247, 0.2)', outline: 'none', textAlign: 'center', fontSize: 13 },
+          searchRow: { display: 'flex', backgroundColor: '#161323', padding: 12, borderRadius: 14, marginBottom: 10, alignItems: 'center', cursor: 'pointer', border: '1px solid rgba(168, 85, 247, 0.15)' },
+          searchImg: { width: 42, height: 58, borderRadius: 6, marginRight: 12, objectFit: 'contain' },
+          
+          btnCamera: { width: '100%', backgroundColor: '#161323', color: '#c084fc', border: '1px solid rgba(168, 85, 247, 0.4)', padding: 14, borderRadius: 14, fontWeight: 'bold', cursor: 'pointer', marginBottom: 6 },
+          btnPurple: { width: '100%', background: 'linear-gradient(135deg, #9333ea, #6366f1)', color: '#fff', border: 'none', padding: 14, borderRadius: 14, fontWeight: 'bold', cursor: 'pointer', boxShadow: '0 4px 15px rgba(147, 51, 234, 0.4)' },
+          btnPurpleSmall: { background: 'linear-gradient(135deg, #9333ea, #6366f1)', color: '#fff', border: 'none', padding: '8px 14px', borderRadius: 20, fontWeight: 'bold', cursor: 'pointer', fontSize: 12 },
+          btnPurpleAction: { background: 'linear-gradient(135deg, #9333ea, #6366f1)', color: '#fff', border: 'none', padding: 12, borderRadius: 14, flex: 2, fontWeight: 'bold', cursor: 'pointer', boxShadow: '0 4px 12px rgba(147, 51, 234, 0.3)' },
+          btnDangerAction: { backgroundColor: '#4c1d95', color: '#fca5a5', border: 'none', padding: 12, borderRadius: 14, flex: 1, fontWeight: 'bold', cursor: 'pointer' },
+          btnGray: { backgroundColor: '#231e3d', color: '#fff', border: 'none', padding: 12, borderRadius: 14, flex: 1, fontWeight: 'bold', cursor: 'pointer' },
+          
+          bottomBar: { position: 'absolute', bottom: 12, left: 16, right: 16, height: 60, backgroundColor: 'rgba(18, 15, 29, 0.9)', display: 'flex', border: '1px solid rgba(168, 85, 247, 0.25)', borderRadius: 20, justifyContent: 'space-around', alignItems: 'center', backdropFilter: 'blur(12px)', boxShadow: '0 8px 32px rgba(0,0,0,0.6)' },
+          navBtn: { flex: 1, height: '80%', margin: '0 4px', background: 'none', border: 'none', fontWeight: 'bold', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', borderRadius: 12, transition: 'all 0.2s' },
+
+          targetSegmentContainer: { width: '100%', marginTop: 12, backgroundColor: '#161323', padding: 8, borderRadius: 14, boxSizing: 'border-box', border: '1px solid rgba(168, 85, 247, 0.15)' },
+          targetSegmentBtn: { flex: 1, padding: 10, borderRadius: 10, border: 'none', color: '#fff', fontWeight: 'bold', cursor: 'pointer', fontSize: 12 },
+
+          priceContainer: { backgroundColor: '#161323', padding: 16, borderRadius: 16, width: '100%', marginTop: 12, boxSizing: 'border-box', border: '1px solid rgba(168, 85, 247, 0.15)' },
+          priceRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12, marginTop: 8 },
+
+          fieldBox: { width: '100%', marginTop: 12, boxSizing: 'border-box' },
+          fieldLabel: { color: '#aaa', fontSize: 11, display: 'block', marginBottom: 6, fontWeight: 'bold' },
+          chipRow: { display: 'flex', flexWrap: 'wrap', gap: 6 },
+          chip: { padding: '6px 10px', borderRadius: 20, border: 'none', color: '#fff', fontSize: 11, cursor: 'pointer', fontWeight: 'bold' },
+          actionRow: { display: 'flex', gap: 10, marginTop: 18, width: '100%' },
+
+          modalOverlay: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(5, 5, 8, 0.85)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000, backdropFilter: 'blur(5px)' },
+          modalContent: { backgroundColor: '#120f1d', padding: 22, borderRadius: 24, width: '90%', maxWidth: '390px', maxHeight: '90vh', overflowY: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'center', boxSizing: 'border-box', border: '1px solid rgba(168, 85, 247, 0.3)', boxShadow: '0 10px 30px rgba(0,0,0,0.8)' },
+          modalImg: { width: 140, height: 190, objectFit: 'contain', borderRadius: 10 },
+          dialog: { backgroundColor: '#120f1d', padding: 24, borderRadius: 24, width: '85%', maxWidth: '320px', border: '1px solid rgba(168, 85, 247, 0.3)', boxShadow: '0 10px 30px rgba(0,0,0,0.8)' },
+          txtSub: { color: '#888', fontSize: 12, marginTop: 2 },
+          txtPurple: { color: '#c084fc', fontWeight: 'bold' }
+        };
+
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+</body>
+</html>
